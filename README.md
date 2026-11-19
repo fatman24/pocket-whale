@@ -11,9 +11,9 @@ hand a bundle to the phone.
 
 - **Phone / Watch bridge**: list sessions, send messages, answer approvals and single-choice
   questions from iPhone or Apple Watch.
-- **Handoff (computer → phone)**: package unfinished files plus a short brief as a
-  `.pockethandoff` bundle. The phone receives it, puts files in the session workspace, and
-  continues with its own local host.
+- **Handoff (computer → phone)**: package any unfinished files plus a short brief as a
+  `.pockethandoff` bundle (any extension, up to 25 MB per file / 60 MB total). The phone
+  receives it, puts files in the session workspace, and continues with its own local host.
 - **Plan (phone → computer)**: send a goal/plan from the phone; the desktop starts a new
   session and the agent executes it.
 - **Local pairing gateway**: pair over the LAN with a short code; the phone discovers the

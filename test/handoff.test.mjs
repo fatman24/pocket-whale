@@ -30,7 +30,7 @@ function writeFile(dir, name, content) {
   return full
 }
 
-test('候选文件：只列顶层、白名单扩展名、跳过隐藏与符号链接', () => {
+test('候选文件：只列顶层、不限扩展名、跳过符号链接，隐藏文件可选', () => {
   const dir = tmpdir()
   writeFile(dir, '东京行程.docx', 'doc')
   writeFile(dir, '预算.xlsx', 'xlsx')
@@ -43,9 +43,11 @@ test('候选文件：只列顶层、白名单扩展名、跳过隐藏与符号�
 
   const rows = collectCandidates({ cwd: dir, sessionCreatedAt: Date.now() - 1000 })
   const names = rows.map((row) => row.path)
-  assert.deepEqual(new Set(names), new Set(['东京行程.docx', '预算.xlsx', '说明.md']))
-  assert.equal(rows.every((row) => row.recommended), true)
-  assert.equal(rows.every((row) => row.kind !== null), true)
+  assert.deepEqual(new Set(names), new Set(['东京行程.docx', '预算.xlsx', '说明.md', 'main.rs', '.hidden.docx']))
+  const hidden = rows.find((row) => row.path === '.hidden.docx')
+  assert.equal(hidden.recommended, false)
+  assert.equal(rows.find((row) => row.path === 'main.rs').kind, null)
+  assert.equal(rows.filter((row) => !row.path.startsWith('.')).every((row) => row.recommended), true)
 })
 
 test('候选文件：会话开始之前的老文件不默认勾选', () => {
@@ -59,13 +61,14 @@ test('候选文件：会话开始之前的老文件不默认勾选', () => {
   assert.equal(rows[0].recommended, false)
 })
 
-test('白名单与 id 校验', () => {
+test('文件名与 id 校验', () => {
   assert.equal(isAllowedFileName('a.docx'), true)
   assert.equal(isAllowedFileName('a.DOCX'), true)
   assert.equal(isAllowedFileName('../a.docx'), false)
   assert.equal(isAllowedFileName('/tmp/a.docx'), false)
-  assert.equal(isAllowedFileName('.a.docx'), false)
-  assert.equal(isAllowedFileName('a.exe'), false)
+  assert.equal(isAllowedFileName('.a.docx'), true)
+  assert.equal(isAllowedFileName('a.exe'), true)
+  assert.equal(isAllowedFileName('Makefile'), true)
   assert.equal(fileKind('a.pptx'), 'pptx')
   assert.equal(isValidId('hf-mabc123-4f2a'), true)
   assert.equal(isValidId('../etc'), false)

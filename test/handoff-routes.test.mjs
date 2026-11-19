@@ -134,7 +134,7 @@ test('接力路由：候选 → 生成 → 列表 → 下载 → 删除', async 
     assert.equal(candidates.status, 200)
     assert.equal(candidates.body.session.title, '东京三日行程')
     const names = candidates.body.files.map((file) => file.path)
-    assert.deepEqual(new Set(names), new Set(['东京行程.docx', '预算.xlsx', 'notes.md']))
+    assert.deepEqual(new Set(names), new Set(['东京行程.docx', '预算.xlsx', 'notes.md', 'main.rs', 'empty-dir']))
     assert.equal(candidates.body.files.every((file) => file.recommended), true)
 
     // 不传 sessionId 时自动选最近的会话
@@ -147,7 +147,7 @@ test('接力路由：候选 → 生成 → 列表 → 下载 → 删除', async 
       body: JSON.stringify({ sessionId: 'session-a', note: '第二天要去看展' }),
     })
     assert.equal(created.status, 200, JSON.stringify(created.body))
-    assert.equal(created.body.bundle.files.length, 3, '默认带全部推荐文件')
+    assert.equal(created.body.bundle.files.length, 5, '默认带全部推荐文件')
     assert.match(created.body.digest, /帮我排东京三天行程/)
     assert.match(created.body.digest, /第二天要去看展/)
     assert.match(created.body.bundle.downloadPath, /^\/pocket\/handoff\/file\?id=/)
@@ -170,9 +170,11 @@ test('接力路由：候选 → 生成 → 列表 → 下载 → 删除', async 
       'files/东京行程.docx',
       'files/预算.xlsx',
       'files/notes.md',
+      'files/main.rs',
+      'files/empty-dir',
     ]))
     const manifest = JSON.parse(entries[0].data.toString())
-    assert.equal(manifest.files.length, 3)
+    assert.equal(manifest.files.length, 5)
     for (const file of manifest.files) {
       assert.equal(file.sha256, createHash('sha256').update(fs.readFileSync(path.join(cwd, file.path))).digest('hex'))
     }
@@ -194,7 +196,7 @@ test('接力路由：非法路径与未知会话被拒绝', async () => {
 
   const mounted = await mountPlugin({ cwd, home })
   try {
-    for (const bad of ['../a.docx', '/etc/passwd', 'sub/a.docx', '.hidden.docx']) {
+    for (const bad of ['../a.docx', '/etc/passwd', 'sub/a.docx']) {
       const res = await getJson(`${mounted.base}/pocket/handoff/create`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
