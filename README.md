@@ -3,6 +3,8 @@
 Pocket Whale（口袋鲸）is a DeepSeek Harness (DSH) desktop plugin that connects DSH to the
 Pocket Whale iPhone / Apple Watch client.
 
+中文说明：[README.zh.md](README.zh.md)
+
 It exposes a narrow HTTP + SSE surface for the phone, and adds a DSH panel for handoff,
 device pairing and approvals. Tools and files stay on the computer unless you explicitly
 hand a bundle to the phone.

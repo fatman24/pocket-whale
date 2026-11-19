@@ -1,5 +1,7 @@
 # dsh-pocket-whale（口袋鲸 DSH 插件）
 
+English: [README.md](README.md)
+
 口袋鲸是 DeepSeek Harness 的电脑端插件，用来把 DSH 接到 iPhone / Apple Watch。
 
 它在 DSH 里提供一个窄的 `/pocket/*` HTTP + SSE 接口，以及一个面板：接力、设备配对、
