@@ -37,7 +37,7 @@ import {
 export const inject = ['webServer']
 
 /** 插件版本：状态页与接力包 manifest 共用同一个来源。 */
-const HANDOFF_VERSION = '0.9.0'
+const HANDOFF_VERSION = '1.0.0'
 
 // 手机本机模式下，每个会话一个短编号文件夹：workspace/001、workspace/002…
 // 文件夹备注（会话标题）写在可见的「会话备注.txt」里；隐藏 JSON 给 App 读。

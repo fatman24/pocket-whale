@@ -127,7 +127,7 @@ test('接力路由：候选 → 生成 → 列表 → 下载 → 删除', async 
   const mounted = await mountPlugin({ cwd, home })
   try {
     const status = await getJson(`${mounted.base}/pocket/status`)
-    assert.equal(status.body.version, '0.9.0')
+    assert.equal(status.body.version, '1.0.0')
     assert.equal(status.body.features.handoff, true)
 
     const candidates = await getJson(`${mounted.base}/pocket/handoff/candidates?sessionId=session-a`)
