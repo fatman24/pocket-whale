@@ -625,7 +625,7 @@ window.__ModuleLoader__.load({
     // 浮动入口：一个可拖动的小胶囊 + 一个可拖动的面板
     // ---------------------------------------------------------------------
 
-    function FloatingEntry() {
+    function FloatingEntry(props) {
       const [gateway, setGateway] = useState(null)
       const [status, setStatus] = useState(null)
       const [error, setError] = useState(null)
@@ -634,6 +634,9 @@ window.__ModuleLoader__.load({
       const [entryVisible, setEntryVisible] = useState(function () { return readPref(PREF.entryVisible, true) })
       const sidebarAvailable = useSidebarAvailable()
       const [pendingCount, setPendingCount] = useState(0)
+      const [currentSessionId, setCurrentSessionId] = useState(function () {
+        try { return props.getCurrentSessionId ? props.getCurrentSessionId() : null } catch (error) { return null }
+      })
       const [launcherPos, setLauncherPos] = useState(function () {
         return readPref(PREF.launcherPos, null) || { x: Math.max(16, window.innerWidth - 150), y: Math.max(16, window.innerHeight - 140) }
       })
@@ -673,6 +676,18 @@ window.__ModuleLoader__.load({
           alive = false
           if (timer) clearTimeout(timer)
         }
+      }, [])
+
+      useEffect(function () {
+        function syncCurrent() {
+          try {
+            const next = props.getCurrentSessionId ? props.getCurrentSessionId() : null
+            setCurrentSessionId(function (old) { return old === next ? old : next })
+          } catch (error) { /* DSH 还没挂载会话服务 */ }
+        }
+        syncCurrent()
+        const timer = setInterval(syncCurrent, 1500)
+        return function () { clearInterval(timer) }
       }, [])
 
       useEffect(function () {
@@ -786,7 +801,7 @@ window.__ModuleLoader__.load({
             }),
             h(PanelBody, {
               tab, setTab, status, gateway,
-              currentSessionId: null,
+              currentSessionId,
               sidebarAvailable,
               onResetPosition: resetPosition,
               entryVisible,
@@ -907,12 +922,25 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        function resolveCurrentSessionId() {
+          try {
+            const uiSession = ctx.get('uiSession')
+            const current = uiSession && uiSession.adapter && uiSession.adapter.current
+            const value = current && current.getSnapshot ? current.getSnapshot() : null
+            return (value && value.key) || null
+          } catch (error) {
+            return null
+          }
+        }
+
         ctx.slots.inject('shell.overlay', function () {
           return ctx.slots.register({
             name: 'shell.overlay',
             id: 'pocket-entry',
             order: 100,
-          }, FloatingEntry)
+          }, function PocketEntry() {
+            return h(FloatingEntry, { getCurrentSessionId: resolveCurrentSessionId })
+          })
         })
 
         // better-sidebar 是可选依赖：装了就把同一页注册成侧边栏标签
