@@ -35,16 +35,42 @@ account system.
 
 ## Install
 
-### From this repository (local directory)
+### From DSH (recommended)
+
+Use the same install flow as other DSH plugins. In the DSH GUI:
+
+**Plugins → Add plugin → enter `github:fatman24/pocket-whale` (or the full
+`https://github.com/fatman24/pocket-whale` URL) → Install → enable “Pocket Whale / 口袋鲸”.**
+
+Or from a terminal:
+
+```bash
+# use your profile name: web, desktop, …
+dsh plugin --profile <profile> add github:fatman24/pocket-whale
+```
+
+If the package is later published to npm, the shorter form is:
+
+```bash
+dsh plugin --profile <profile> add dsh-pocket-whale@latest
+```
+
+Omit `--profile` when you are using the default profile. Restart DSH only if the
+plugin row asks for it.
+
+### From a local checkout (development)
 
 ```bash
 git clone https://github.com/fatman24/pocket-whale.git
 ```
 
-In DSH: **Plugins → Add plugin → choose the cloned `pocket-whale` directory → enable
-“Pocket Whale / 口袋鲸”**. Restart DSH if the row asks for it.
+Then **Plugins → Add plugin → choose the cloned directory**, or:
 
-The package is a bundle with `dsh.bundle.patch`; it is not an App Store app and does not
+```bash
+dsh plugin --profile <profile> add /absolute/path/to/pocket-whale
+```
+
+This is a DSH bundle with `dsh.bundle.patch`; it is not an App Store app and does not
 need Xcode. DSH’s plugin manager performs the profile installation.
 
 ### Verify

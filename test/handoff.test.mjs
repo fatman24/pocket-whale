@@ -26,6 +26,7 @@ function tmpdir() {
 
 function writeFile(dir, name, content) {
   const full = path.join(dir, name)
+  fs.mkdirSync(path.dirname(full), { recursive: true })
   fs.writeFileSync(full, content)
   return full
 }
@@ -43,11 +44,14 @@ test('候选文件：只列顶层、不限扩展名、跳过符号链接，隐�
 
   const rows = collectCandidates({ cwd: dir, sessionCreatedAt: Date.now() - 1000 })
   const names = rows.map((row) => row.path)
-  assert.deepEqual(new Set(names), new Set(['东京行程.docx', '预算.xlsx', '说明.md', 'main.rs', '.hidden.docx']))
+  assert.deepEqual(new Set(names), new Set(['东京行程.docx', '预算.xlsx', '说明.md', 'main.rs', '.hidden.docx', 'sub']))
   const hidden = rows.find((row) => row.path === '.hidden.docx')
   assert.equal(hidden.recommended, false)
   assert.equal(rows.find((row) => row.path === 'main.rs').kind, null)
-  assert.equal(rows.filter((row) => !row.path.startsWith('.')).every((row) => row.recommended), true)
+  const folder = rows.find((row) => row.path === 'sub')
+  assert.equal(folder.isDirectory, true)
+  assert.equal(folder.fileCount, 1)
+  assert.equal(rows.filter((row) => !row.path.startsWith('.') && !row.isDirectory).every((row) => row.recommended), true)
 })
 
 test('候选文件：会话开始之前的老文件不默认勾选', () => {
@@ -75,12 +79,22 @@ test('文件名与 id 校验', () => {
   assert.equal(isValidId('hf/a'), false)
 })
 
+test('读文件：目录展开、保留相对路径', () => {
+  const dir = tmpdir()
+  writeFile(dir, 'src/a.ts', 'code')
+  writeFile(dir, 'src/b.md', 'notes')
+  writeFile(dir, 'src/.env', 'secret')
+  const files = loadPayloads({ cwd: dir, paths: ['src'] })
+  assert.deepEqual(new Set(files.map((file) => file.path)), new Set(['src/a.ts', 'src/b.md', 'src/.env']))
+  assert.equal(files.every((file) => file.data.length > 0), true)
+})
+
 test('读文件：拒绝穿越、超限与不存在的名字', () => {
   const dir = tmpdir()
   writeFile(dir, 'ok.docx', 'ok')
   assert.throws(() => loadPayloads({ cwd: dir, paths: ['../ok.docx'] }), /file-not-allowed/)
-  assert.throws(() => loadPayloads({ cwd: dir, paths: ['sub/ok.docx'] }), /file-not-allowed/)
-  assert.throws(() => loadPayloads({ cwd: dir, paths: ['missing.docx'] }), /ENOENT/)
+  assert.throws(() => loadPayloads({ cwd: dir, paths: ['sub/ok.docx'] }), /not-a-file/)
+  assert.throws(() => loadPayloads({ cwd: dir, paths: ['missing.docx'] }), /not-a-file/)
   assert.throws(() => loadPayloads({ cwd: dir, paths: [] }), /no-files/)
 
   const big = path.join(dir, 'big.pdf')

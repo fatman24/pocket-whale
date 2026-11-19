@@ -19,12 +19,39 @@ English: [README.md](README.md)
 
 ## 安装
 
+### 在 DSH 里直接装（推荐）
+
+和其他 DSH 插件一样，在 GUI 里：
+
+**Plugins → Add plugin → 填 `github:fatman24/pocket-whale`（或完整
+`https://github.com/fatman24/pocket-whale`）→ Install → 启用「口袋鲸 / Pocket Whale」**。
+
+也可以在终端：
+
+```bash
+# 把 <profile> 换成你的 profile：web、desktop…
+dsh plugin --profile <profile> add github:fatman24/pocket-whale
+```
+
+如果之后发布了 npm 包，可以缩短成：
+
+```bash
+dsh plugin --profile <profile> add dsh-pocket-whale@latest
+```
+
+不写 `--profile` 就使用默认 profile。只有插件行提示需要重启时才重启。
+
+### 本地开发
+
 ```bash
 git clone https://github.com/fatman24/pocket-whale.git
 ```
 
-在 DSH 里打开 **Plugins → Add plugin → 选择克隆下来的 `pocket-whale` 目录 →
-启用「口袋鲸 / Pocket Whale」**。如果提示需要重启，就重启一次 DSH。
+然后 **Plugins → Add plugin → 选择克隆目录**，或：
+
+```bash
+dsh plugin --profile <profile> add /absolute/path/to/pocket-whale
+```
 
 这是 DSH bundle，不需要 Xcode，也不是 App Store 应用。
 

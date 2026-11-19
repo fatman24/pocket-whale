@@ -195,7 +195,9 @@ window.__ModuleLoader__.load({
           if (!body.ok) throw new Error(body.error || '读取失败')
           setCandidates(body)
           const next = {}
-          ;(body.files || []).forEach(function (file) { if (file.recommended) next[file.path] = true })
+          ;(body.files || []).forEach(function (file) {
+            if (file.recommended && !file.tooLarge) next[file.path] = true
+          })
           setPicked(next)
           setError(null)
         } catch (error) {
@@ -329,20 +331,28 @@ window.__ModuleLoader__.load({
                 }))),
         candidates
           ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-            h('div', { style: { fontSize: 12, fontWeight: 600 } }, '带过去哪些文件'),
+            h('div', { style: { fontSize: 12, fontWeight: 600 } }, '带过去哪些文件/文件夹'),
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 180, overflowY: 'auto' } },
               files.length === 0
                 ? h(Hint, null, '这个目录里没有可接力的文件。')
-                : files.slice(0, 40).map(function (file) {
+                : files.slice(0, 60).map(function (file) {
                   const on = Boolean(picked[file.path])
+                  const folder = Boolean(file.isDirectory)
+                  const disabled = Boolean(file.tooLarge)
+                  const detail = folder
+                    ? (disabled ? '超过 25MB/60MB/40 个文件限制' : String(file.fileCount || 0) + ' 个文件')
+                    : (file.tooLarge ? '超过单文件 25MB' : String(file.kind || '文件'))
                   return h('label', {
                     key: file.path,
-                    style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' },
+                    title: disabled ? detail : file.path,
+                    style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 },
                   },
                     h('input', {
                       type: 'checkbox',
                       checked: on,
+                      disabled,
                       onChange: function () {
+                        if (disabled) return
                         setPicked(function (old) {
                           const next = Object.assign({}, old)
                           next[file.path] = !on
@@ -350,10 +360,11 @@ window.__ModuleLoader__.load({
                         })
                       },
                     }),
+                    h('span', { style: { opacity: 0.7, flex: '0 0 auto' } }, folder ? '▸' : '·'),
                     h('span', {
                       style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
                     }, file.path),
-                    h('span', { style: { opacity: 0.45, fontSize: 11 } }, file.kind || ''))
+                    h('span', { style: { opacity: 0.45, fontSize: 11, flex: '0 0 auto' } }, detail))
                 })),
             h('input', {
               value: note,
