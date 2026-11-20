@@ -170,6 +170,9 @@ window.__ModuleLoader__.load({
       const [result, setResult] = useState(null)
       const [busy, setBusy] = useState(false)
       const [error, setError] = useState(null)
+      const [folderPath, setFolderPath] = useState('')
+      const [folderLoading, setFolderLoading] = useState(false)
+      const [folderError, setFolderError] = useState(null)
 
       const loadSessions = useCallback(async function () {
         try {
@@ -188,6 +191,9 @@ window.__ModuleLoader__.load({
 
       const select = useCallback(async function (id) {
         setSessionId(id)
+        setFolderPath('')
+        setFolderLoading(false)
+        setFolderError(null)
         setCandidates(null)
         setResult(null)
         try {
@@ -204,6 +210,30 @@ window.__ModuleLoader__.load({
           setError(error.message)
         }
       }, [])
+
+      const openFolder = useCallback(async function (nextPath) {
+        if (!sessionId) return
+        setFolderLoading(true)
+        setFolderError(null)
+        try {
+          const body = await getJson('/pocket/handoff/candidates?sessionId=' + encodeURIComponent(sessionId)
+            + '&path=' + encodeURIComponent(nextPath || ''))
+          if (!body.ok) throw new Error(body.error || '读取文件夹失败')
+          setCandidates(body)
+          setFolderPath(nextPath || '')
+          setPicked(function (old) {
+            const merged = Object.assign({}, old)
+            ;(body.files || []).forEach(function (file) {
+              if (file.recommended && !file.tooLarge) merged[file.path] = true
+            })
+            return merged
+          })
+        } catch (error) {
+          setFolderError(error.message)
+        } finally {
+          setFolderLoading(false)
+        }
+      }, [sessionId])
 
       useEffect(function () { loadSessions() }, [])
 
@@ -281,6 +311,17 @@ window.__ModuleLoader__.load({
         sessions.length === 0
           ? h(Hint, null, '还没有可接力的会话。先开会话、聊到一半再回来。')
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            folderPath
+              ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 } },
+                h('button', {
+                  onClick: function () { openFolder(folderPath.split('/').slice(0, -1).join('/')) },
+                  style: Object.assign({}, buttonBase, { padding: '2px 8px', border: COLORS.border, background: 'transparent', color: 'inherit' }),
+                }, '← 上级'),
+                h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: 0.7 } },
+                  '当前文件夹：' + folderPath))
+              : null,
+            folderLoading ? h(Hint, null, '正在读取文件夹…') : null,
+            folderError ? h(ErrorBox, null, folderError) : null,
             h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
               h('input', {
                 value: query,
@@ -338,33 +379,44 @@ window.__ModuleLoader__.load({
                 : files.slice(0, 60).map(function (file) {
                   const on = Boolean(picked[file.path])
                   const folder = Boolean(file.isDirectory)
-                  const disabled = Boolean(file.tooLarge)
+                  const emptyFolder = folder && Number(file.fileCount || 0) === 0
+                  const disabled = Boolean(file.tooLarge) || emptyFolder
                   const detail = folder
-                    ? (disabled ? '超过 25MB/60MB/40 个文件限制' : String(file.fileCount || 0) + ' 个文件')
+                    ? (emptyFolder ? '空文件夹' : disabled ? '超过 25MB/60MB/40 个文件限制' : String(file.fileCount || 0) + ' 个文件')
                     : (file.tooLarge ? '超过单文件 25MB' : String(file.kind || '文件'))
-                  return h('label', {
+                  return h('div', {
                     key: file.path,
-                    title: disabled ? detail : file.path,
-                    style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 },
+                    title: file.path,
+                    style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, opacity: disabled ? 0.6 : 1 },
                   },
-                    h('input', {
-                      type: 'checkbox',
-                      checked: on,
-                      disabled,
-                      onChange: function () {
-                        if (disabled) return
-                        setPicked(function (old) {
-                          const next = Object.assign({}, old)
-                          next[file.path] = !on
-                          return next
-                        })
-                      },
-                    }),
-                    h('span', { style: { opacity: 0.7, flex: '0 0 auto' } }, folder ? '▸' : '·'),
-                    h('span', {
-                      style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-                    }, file.path),
-                    h('span', { style: { opacity: 0.45, fontSize: 11, flex: '0 0 auto' } }, detail))
+                    h('label', {
+                      style: { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, cursor: disabled ? 'not-allowed' : 'pointer' },
+                    },
+                      h('input', {
+                        type: 'checkbox',
+                        checked: on,
+                        disabled,
+                        onChange: function () {
+                          if (disabled) return
+                          setPicked(function (old) {
+                            const next = Object.assign({}, old)
+                            next[file.path] = !on
+                            return next
+                          })
+                        },
+                      }),
+                      h('span', { style: { opacity: 0.7, flex: '0 0 auto' } }, folder ? '▸' : '·'),
+                      h('span', {
+                        style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                      }, file.path)),
+                    h('span', { style: { opacity: 0.45, fontSize: 11, flex: '0 0 auto' } }, detail),
+                    folder
+                      ? h('button', {
+                        onClick: function () { openFolder(file.path) },
+                        disabled: folderLoading,
+                        style: Object.assign({}, buttonBase, { padding: '2px 7px', border: COLORS.border, background: 'transparent', color: COLORS.accent, flex: '0 0 auto' }),
+                      }, '打开 ›')
+                      : null)
                 })),
             h('input', {
               value: note,

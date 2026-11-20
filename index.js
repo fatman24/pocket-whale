@@ -19,7 +19,17 @@ import dgram from 'node:dgram'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { HandoffStore, collectCandidates, createBundle, loadPayloads, newId, parseHandoff } from './lib/handoff.js'
+import {
+  HandoffStore,
+  MAX_FILE_BYTES,
+  MAX_FILES,
+  MAX_TOTAL_BYTES,
+  collectCandidates,
+  createBundle,
+  loadPayloads,
+  newId,
+  parseHandoff,
+} from './lib/handoff.js'
 import { PairingGateway } from './lib/lan-gateway.js'
 import {
   DecisionBook,
@@ -881,16 +891,21 @@ export function apply(ctx) {
           const url = new URL(req.url ?? '/', 'http://pocket.local')
           const info = await readSessionInfo(url.searchParams.get('sessionId'))
           const cwd = usableCwd(info.header.cwd)
+          const folder = url.searchParams.get('path') ?? ''
           const files = collectCandidates({
             cwd,
+            relative: folder,
             sessionCreatedAt: info.header.createdAt ?? 0,
           })
           sendJson(res, 200, {
             ok: true,
             session: { id: info.id, title: info.title, cwd, live: info.live },
+            path: folder || null,
             files,
             limits: {
-              extensions: ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt', 'csv', 'png', 'jpg'],
+              maxFileBytes: MAX_FILE_BYTES,
+              maxTotalBytes: MAX_TOTAL_BYTES,
+              maxFiles: MAX_FILES,
             },
           })
         } catch (error) {
