@@ -301,7 +301,7 @@ window.__ModuleLoader__.load({
       }
 
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        h(Hint, null, '把电脑上没做完的轻办公文件（docx / xlsx / pptx / pdf / md / txt / 图片）打包，手机接收后接着做。'),
+        h(Hint, null, '把电脑上没做完的文件或文件夹打包（不限类型；单文件 ≤25MB、总计 ≤60MB、最多 40 个文件），手机接收后接着做。'),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
           h('span', { style: { fontSize: 12, fontWeight: 600, flex: 1 } }, '选一个会话'),
           h('button', {
@@ -311,17 +311,6 @@ window.__ModuleLoader__.load({
         sessions.length === 0
           ? h(Hint, null, '还没有可接力的会话。先开会话、聊到一半再回来。')
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-            folderPath
-              ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 } },
-                h('button', {
-                  onClick: function () { openFolder(folderPath.split('/').slice(0, -1).join('/')) },
-                  style: Object.assign({}, buttonBase, { padding: '2px 8px', border: COLORS.border, background: 'transparent', color: 'inherit' }),
-                }, '← 上级'),
-                h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: 0.7 } },
-                  '当前文件夹：' + folderPath))
-              : null,
-            folderLoading ? h(Hint, null, '正在读取文件夹…') : null,
-            folderError ? h(ErrorBox, null, folderError) : null,
             h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
               h('input', {
                 value: query,
@@ -372,7 +361,20 @@ window.__ModuleLoader__.load({
                 }))),
         candidates
           ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-            h('div', { style: { fontSize: 12, fontWeight: 600 } }, '带过去哪些文件/文件夹'),
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+              h('span', { style: { fontSize: 12, fontWeight: 600, flex: 1 } }, '带过去哪些文件/文件夹'),
+              folderPath
+                ? h('button', {
+                  onClick: function () { openFolder(folderPath.split('/').slice(0, -1).join('/')) },
+                  style: Object.assign({}, buttonBase, { padding: '2px 8px', border: COLORS.border, background: 'transparent', color: 'inherit' }),
+                }, '← 上级')
+                : null),
+            folderPath
+              ? h('div', { style: { fontSize: 11, opacity: 0.65, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                '当前文件夹：' + folderPath)
+              : null,
+            folderLoading ? h(Hint, null, '正在读取文件夹…') : null,
+            folderError ? h(ErrorBox, null, folderError) : null,
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 180, overflowY: 'auto' } },
               files.length === 0
                 ? h(Hint, null, '这个目录里没有可接力的文件。')
