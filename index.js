@@ -1170,9 +1170,24 @@ export function apply(ctx) {
       ctx.logger?.warn?.(`pocket-whale: discovery socket error: ${error?.message ?? error}`)
     })
     discoverySocket.bind(DISCOVERY_PORT, () => {
+      // macOS 同时有 Wi-Fi / 以太网 / iPhone 热点时，只 join 默认接口会漏掉热点。
+      // 每个非回环 IPv4 接口都加入一次组播，手机在任一网段都能发现宿主。
+      let joined = 0
       try {
-        discoverySocket.addMembership(DISCOVERY_GROUP)
-        ctx.logger?.info?.(`pocket-whale: discovery on ${DISCOVERY_GROUP}:${DISCOVERY_PORT}`)
+        for (const addresses of Object.values(os.networkInterfaces())) {
+          for (const address of addresses ?? []) {
+            if (address.family !== 'IPv4' || address.internal) continue
+            try {
+              discoverySocket.addMembership(DISCOVERY_GROUP, address.address)
+              joined += 1
+              ctx.logger?.info?.(`pocket-whale: discovery multicast on ${address.address}`)
+            } catch (error) {
+              ctx.logger?.warn?.(`pocket-whale: multicast join ${address.address} failed: ${error?.message ?? error}`)
+            }
+          }
+        }
+        if (joined === 0) discoverySocket.addMembership(DISCOVERY_GROUP)
+        ctx.logger?.info?.(`pocket-whale: discovery on ${DISCOVERY_GROUP}:${DISCOVERY_PORT} (${joined} interfaces)`)
       } catch (error) {
         ctx.logger?.warn?.(`pocket-whale: multicast join failed: ${error?.message ?? error}`)
       }
