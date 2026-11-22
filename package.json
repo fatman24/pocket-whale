@@ -1,6 +1,6 @@
 {
   "name": "dsh-pocket-whale",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "type": "module",
   "description": "Phone/watch bridge for DeepSeek Harness: handoff, approvals, questions, and a local pairing gateway.",

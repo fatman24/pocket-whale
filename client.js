@@ -687,6 +687,123 @@ window.__ModuleLoader__.load({
     }
 
     // ---------------------------------------------------------------------
+    // 新配对设备弹窗：不依赖浮动面板是否打开
+    // ---------------------------------------------------------------------
+
+    function PairingAlert() {
+      const [request, setRequest] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState(null)
+      const dismissed = useRef(new Set())
+
+      useEffect(function () {
+        let alive = true
+        let timer = null
+
+        async function tick() {
+          try {
+            const resolved = await resolveGateway()
+            if (!alive) return
+            const data = await getJson(resolved.gateway + '/lan/pending')
+            if (!alive) return
+            const list = (data.pending || []).filter(function (item) {
+              return !dismissed.current.has(item.id)
+            })
+            setRequest(function (prev) {
+              if (prev && list.some(function (item) { return item.id === prev.id })) return prev
+              return list[0] || null
+            })
+          } catch (error) {
+            // 宿主没起来时静默；打开面板时会显示具体错误
+          }
+          if (alive) timer = setTimeout(tick, 2500)
+        }
+
+        tick()
+        return function cleanup() {
+          alive = false
+          if (timer) clearTimeout(timer)
+        }
+      }, [])
+
+      async function decide(allow) {
+        if (!request || busy) return
+        const id = request.id
+        const resolved = await resolveGateway()
+        if (!resolved.gateway) return
+        setBusy(true)
+        setError(null)
+        try {
+          await postJson(resolved.gateway + '/lan/' + (allow ? 'approve' : 'deny'), { id })
+          dismissed.current.add(id)
+          setRequest(null)
+        } catch (error) {
+          setError(error.message)
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      function later() {
+        if (!request) return
+        dismissed.current.add(request.id)
+        setRequest(null)
+      }
+
+      if (!request) return null
+
+      return h('div', {
+        style: {
+          position: 'fixed', inset: 0, zIndex: 10001,
+          background: 'rgba(0,0,0,0.42)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 20,
+        },
+      },
+        h('div', {
+          style: Object.assign({}, cardStyle, {
+            width: 340, maxWidth: '100%', padding: '18px 18px 14px',
+            display: 'flex', flexDirection: 'column', gap: 10,
+          }),
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            h('span', { style: { fontSize: 18 } }, '📱'),
+            h('div', { style: { flex: 1, minWidth: 0 } },
+              h('div', { style: { fontSize: 14, fontWeight: 700 } }, '新设备请求配对'),
+              h('div', { style: { fontSize: 11, opacity: 0.55 } }, '确认是你自己的手机再允许')),
+            h('button', {
+              onClick: later,
+              style: Object.assign({}, buttonBase, { padding: '2px 8px', border: 'none', background: 'transparent', color: 'inherit', opacity: 0.55 }),
+              'aria-label': '稍后',
+            }, '✕')),
+          h('div', { style: { padding: '10px 12px', borderRadius: 10, background: 'rgba(240,160,32,0.08)', border: '1px solid rgba(240,160,32,0.32)' } },
+            h('div', { style: { fontSize: 13, fontWeight: 600 } }, request.name || '未知设备'),
+            h('div', { style: { fontSize: 11, opacity: 0.6, marginTop: 2 } }, meta(request)),
+            h('div', { style: { fontSize: 11, fontFamily: 'monospace', marginTop: 4 } },
+              '验证码 ' + (request.shortCode || '----'))),
+          h('div', { style: { fontSize: 11, opacity: 0.6, lineHeight: 1.6 } },
+            '如果手机上的验证码一致，点「允许」。不是你自己的设备就点「拒绝」。'),
+          error ? h('div', { style: { fontSize: 11, color: COLORS.danger } }, error) : null,
+          h('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
+            h('button', {
+              onClick: later,
+              disabled: busy,
+              style: Object.assign({}, buttonBase, { border: COLORS.subtleBorder, background: 'transparent', color: 'inherit' }),
+            }, '稍后'),
+            h('button', {
+              onClick: function () { decide(false) },
+              disabled: busy,
+              style: Object.assign({}, buttonBase, { border: COLORS.subtleBorder, background: 'transparent', color: COLORS.danger }),
+            }, '拒绝'),
+            h('button', {
+              onClick: function () { decide(true) },
+              disabled: busy,
+              style: Object.assign({}, buttonBase, { border: 'none', background: COLORS.accent, color: '#fff' }),
+            }, busy ? '处理中…' : '允许')))
+      )
+    }
+
+    // ---------------------------------------------------------------------
     // 浮动入口：一个可拖动的小胶囊 + 一个可拖动的面板
     // ---------------------------------------------------------------------
 
@@ -1004,7 +1121,9 @@ window.__ModuleLoader__.load({
             id: 'pocket-entry',
             order: 100,
           }, function PocketEntry() {
-            return h(FloatingEntry, { getCurrentSessionId: resolveCurrentSessionId })
+            return h(React.Fragment, null,
+              h(FloatingEntry, { getCurrentSessionId: resolveCurrentSessionId }),
+              h(PairingAlert))
           })
         })
 
