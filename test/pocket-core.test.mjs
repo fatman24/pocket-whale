@@ -427,3 +427,35 @@ test('审批：等待中途手机退后台，转交桌面且卡片收起', async
   assert.equal(await pending, 'desktop')
   assert.equal(book.pendingCount, 0)
 })
+
+test('decisionOf：结算后能在幂等窗口内认出「已决」，且不消费重放次数', () => {
+  const c = clock()
+  const book = new DecisionBook({ now: c.now })
+  book.open('q1')
+  const batch = { answers: [{ id: 'q1', selected: ['A'] }] }
+  book.decide('q1', batch)
+  assert.deepEqual(book.decisionOf('q1'), { status: 'decided', outcome: batch })
+  // 只是查询，不会把已决记录消费掉
+  assert.deepEqual(book.decisionOf('q1'), { status: 'decided', outcome: batch })
+  c.advance(DECIDED_TTL_MS + 1)
+  assert.deepEqual(book.decisionOf('q1'), { status: 'unknown' }, '窗口过期后不再声称已决')
+})
+
+test('decisionOf：待决/未知分别返回 pending/unknown', () => {
+  const book = new DecisionBook()
+  book.open('pending-1')
+  assert.deepEqual(book.decisionOf('pending-1'), { status: 'pending' })
+  assert.deepEqual(book.decisionOf('nope'), { status: 'unknown' })
+})
+
+test('sameQuestionAnswers：多选顺序不敏感，不同答案/自定义文本能区分', async () => {
+  const { sameQuestionAnswers } = await import('../lib/pocket-core.js')
+  const left = { answers: [{ id: 'q1', selected: ['A', 'B'] }, { id: 'q2', selected: [] }] }
+  const reordered = { answers: [{ id: 'q2', selected: [] }, { id: 'q1', selected: ['B', 'A'] }] }
+  assert.equal(sameQuestionAnswers(left, reordered), true)
+  assert.equal(sameQuestionAnswers(left, { answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: [] }] }), false)
+  assert.equal(sameQuestionAnswers(
+    { answers: [{ id: 'q1', selected: [], custom: 'x' }] },
+    { answers: [{ id: 'q1', selected: [], custom: 'y' }] }
+  ), false)
+})

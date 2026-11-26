@@ -55,10 +55,11 @@ async function mountPlugin({ cwd, home, hooks = {}, discoveryPort, hostPort } = 
       if (name === 'sessionController') {
         return {
           async create(options) {
+            const index = calls.created.length + 1
             calls.created.push(options)
             if (hooks.beforeCreate) await hooks.beforeCreate(options, calls)
             if (hooks.create) return hooks.create(options, calls)
-            return { sessionId: `session-received-${calls.created.length}` }
+            return { sessionId: `session-received-${index}` }
           },
           async prompt(request) {
             calls.prompts.push(request)
@@ -821,6 +822,42 @@ test('旧版回执恢复：没有 task 字段时用同一 requestId 补启动，
     assert.equal(mounted.calls.created.length, 0)
     assert.equal(mounted.calls.prompts.length, 1)
     assert.equal(mounted.calls.prompts[0].requestId, `pocket-handoff-${manifest.id}`)
+  } finally {
+    delete process.env.DSH_POCKET_INBOX
+    await mounted.close()
+  }
+})
+
+test('并发到达：不同包互不影响，各自建一个会话', async () => {
+  const home = tmpdir('pocket-home-')
+  const cwd = tmpdir('pocket-ws-')
+  const inbox = tmpdir('pocket-inbox-')
+  process.env.DSH_POCKET_INBOX = inbox
+  const mounted = await mountPlugin({
+    cwd,
+    home,
+    hooks: { beforeCreate: () => new Promise((resolve) => setTimeout(resolve, 80)) },
+  })
+  try {
+    const make = (id) => createBundle({
+      id,
+      now: Date.now(),
+      session: { id: 's', cwd },
+      direction: 'to-desktop',
+      plan: id,
+      files: [handoffFile('plan.md', id)],
+    }).tar
+    const send = (tar) => fetch(`${mounted.base}/pocket/handoff/receive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-pocket-handoff' },
+      body: tar,
+    }).then((response) => response.json())
+    const [a, b] = await Promise.all([send(make('hf-pkg-a')), send(make('hf-pkg-b'))])
+    assert.notEqual(a.sessionId, b.sessionId, '不同包必须各自建会话')
+    assert.equal(a.task.status, 'started')
+    assert.equal(b.task.status, 'started')
+    assert.equal(mounted.calls.created.length, 2)
+    assert.equal(mounted.calls.prompts.length, 2)
   } finally {
     delete process.env.DSH_POCKET_INBOX
     await mounted.close()
