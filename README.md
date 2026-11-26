@@ -78,7 +78,10 @@ need Xcode. DSH’s plugin manager performs the profile installation.
 1. Open DSH in the browser.
 2. Look for **口袋鲸 / Pocket Whale** in the bottom bar, the right sidebar `+` menu, or the
    floating entry.
-3. Open the panel → **设备 / Devices**; the plugin version and LAN port should appear.
+3. Open the panel → **设备 / Devices**; the **plugin version** (it must match `version` in
+   `package.json`, e.g. `1.0.1`) and the LAN port should appear. `/pocket/status` also
+   reports `protocolVersion` separately — that one only changes when the handoff/HTTP
+   field contract changes.
 4. In the iPhone app choose **Connect to your computer**, find the desktop, and pair.
 
 If the entry is missing, open **Plugins** and check that the bundle is enabled and no

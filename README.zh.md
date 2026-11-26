@@ -58,7 +58,9 @@ dsh plugin --profile <profile> add /absolute/path/to/pocket-whale
 ## 怎么用
 
 1. 打开 DSH，在**底部栏**、**右侧栏 + 菜单**或**右下角浮动入口**找到「口袋鲸」。
-2. 打开面板 → **设备 / Devices**，确认插件版本和局域网端口。
+2. 打开面板 → **设备 / Devices**，确认**插件版本**（应与 `package.json` 的 `version` 一致，
+   例如 `1.0.1`）和局域网端口。`/pocket/status` 里的 `protocolVersion` 是接力/HTTP
+   字段约定版本，只有字段语义变化时才会动它。
 3. iPhone 上打开口袋鲸 App → **连接你的电脑** → 找到电脑并配对。
 4. **接力**：电脑上选会话 → 勾选要带的文件 → 生成接力包；手机「接力」里接收。
 5. **计划**：手机聊清楚计划 → 发到电脑；电脑上 agent 按计划开工。

@@ -13,10 +13,11 @@ function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
 }
 
-async function mountPlugin() {
+async function mountPlugin({ questionTickMs } = {}) {
   process.env.DSH_HOME = tmpdir('pocket-qhome-')
   process.env.DSH_POCKET_LAN = '0'
   process.env.DSH_POCKET_DISCOVERY = '0'
+  if (questionTickMs) process.env.DSH_POCKET_QUESTION_TICK_MS = String(questionTickMs)
 
   const routes = new Map()
   const listeners = new Map()
@@ -56,6 +57,7 @@ async function mountPlugin() {
 
   const { apply } = await import('../index.js')
   const dispose = apply(ctx)
+  delete process.env.DSH_POCKET_QUESTION_TICK_MS
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://test.local')
@@ -131,12 +133,21 @@ test('手机在前台：问题转到手机，回答回到 waterfall', async () =
     assert.equal(accepted.status, 200, JSON.stringify(accepted.body))
     assert.deepEqual(await pending, { answers: [{ id: 'q1', selected: ['按现有内容写'] }] })
 
-    // 再答一次：已决，按未知处理
+    // 相同答案重试（客户端丢了回执）：幂等窗口内回 replayed，宿主只收到一次
     const replay = await postJson(`${mounted.base}/pocket/question`, {
       id: 'call-1',
       answers: [{ id: 'q1', selected: ['按现有内容写'] }],
     })
-    assert.equal(replay.status, 409)
+    assert.equal(replay.status, 200, JSON.stringify(replay.body))
+    assert.equal(replay.body.replayed, true)
+
+    // 不同答案重试：必须明确拒绝，不能静默成功
+    const different = await postJson(`${mounted.base}/pocket/question`, {
+      id: 'call-1',
+      answers: [{ id: 'q1', selected: ['我把数据发给你'] }],
+    })
+    assert.equal(different.status, 409)
+    assert.equal(different.body.error, 'answer-already-settled')
 
     const status = await fetch(`${mounted.base}/pocket/status`).then((res) => res.json())
     assert.equal(status.features.questions, true)
@@ -310,5 +321,31 @@ test('A 模式（宿主在手机里）：没有前台心跳也接管提问，切
   } finally {
     await mounted.close()
     delete process.env.DSH_POCKET_LOCAL_HOST
+  }
+})
+
+test('问题已转交桌面：手机再答给出明确结果，不会把答案塞回去', async () => {
+  // 心跳重查间隔缩短到 30ms，先在手机前台接管，再切后台触发 delegate。
+  const mounted = await mountPlugin({ questionTickMs: 30 })
+  const controller = new AbortController()
+  try {
+    await fetch(`${mounted.base}/pocket/events`, { signal: controller.signal })
+    await postJson(`${mounted.base}/pocket/presence`, { foreground: true })
+
+    const handle = mounted.listener('user-questions/request')
+    const outcomePromise = handle(questionRequest('call-delegated'), () => 'desktop-answerer')
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await postJson(`${mounted.base}/pocket/presence`, { foreground: false })
+    assert.equal(await outcomePromise, 'desktop-answerer')
+
+    const res = await postJson(`${mounted.base}/pocket/question`, {
+      id: 'call-delegated',
+      answers: [{ id: 'q1', selected: ['按现有内容写'] }],
+    })
+    assert.equal(res.status, 409, JSON.stringify(res.body))
+    assert.equal(res.body.error, 'question-delegated')
+  } finally {
+    controller.abort()
+    await mounted.close()
   }
 })

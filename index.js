@@ -24,6 +24,8 @@ import {
   MAX_FILE_BYTES,
   MAX_FILES,
   MAX_TOTAL_BYTES,
+  PLUGIN_VERSION,
+  PROTOCOL_VERSION,
   collectCandidates,
   createBundle,
   loadPayloads,
@@ -32,10 +34,12 @@ import {
 } from './lib/handoff.js'
 import { PairingGateway } from './lib/lan-gateway.js'
 import {
+  DECIDED_TTL_MS,
   DecisionBook,
   makeApprovalAnswerer,
   makeQuestionAnswerer,
   normalizeQuestionAnswers,
+  sameQuestionAnswers,
   summarizeSessionEvent,
   isMainSession,
   toPocketApproval,
@@ -45,9 +49,6 @@ import {
 // Cordis 不允许访问未声明的服务，但用 ctx.get() 可以"不 inject 也读"。
 // 这样 sessionQuery 缺失时插件照样激活，只是会话接口返回 503。
 export const inject = ['webServer']
-
-/** 插件版本：状态页与接力包 manifest 共用同一个来源。 */
-const HANDOFF_VERSION = '1.0.0'
 
 // 手机本机模式下，每个会话一个短编号文件夹：workspace/001、workspace/002…
 // 文件夹备注（会话标题）写在可见的「会话备注.txt」里；隐藏 JSON 给 App 读。
@@ -201,6 +202,8 @@ export function apply(ctx) {
   const questionBook = new DecisionBook()
   const pendingQuestions = new Map()
   const pendingApprovals = new Map()
+  /** 已结算但没进 DecisionBook 的结果（转交桌面/取消），HTTP 侧要给明确答复。 */
+  const settledQuestions = new Map()
   const questionStats = { asked: 0, answered: 0, delegated: 0 }
 
   /** 提问相关事件同时进「待答表」，HTTP 侧要用它校验答案。 */
@@ -210,15 +213,27 @@ export function apply(ctx) {
       questionStats.asked += 1
     } else if (event.type === 'question/settled') {
       pendingQuestions.delete(event.id)
+      if (event.outcome) {
+        const now = Date.now()
+        for (const [id, seen] of settledQuestions) {
+          if (now - seen.at > DECIDED_TTL_MS) settledQuestions.delete(id)
+        }
+        settledQuestions.set(event.id, { outcome: event.outcome, at: now })
+      }
       if (event.outcome === 'answered') questionStats.answered += 1
       if (event.outcome === 'delegated') questionStats.delegated += 1
     }
     broadcast(event)
   }
 
+  // 问题转交前的 presence recheck 间隔；联调/测试可注入，避免真等 20 秒。
+  const QUESTION_TICK_MS = Number(process.env.DSH_POCKET_QUESTION_TICK_MS) > 0
+    ? Number(process.env.DSH_POCKET_QUESTION_TICK_MS)
+    : 20_000
   const answerQuestions = makeQuestionAnswerer({
     book: questionBook,
     broadcast: questionBroadcast,
+    tickMs: QUESTION_TICK_MS,
     // A 模式没有别的 answerer 可转交：手机切后台就继续等，SSE 重连时会补发
     shouldHandle: () => LOCALLY_HOSTED || (subscribers.size > 0 && phoneIsForeground()),
   })
@@ -277,6 +292,152 @@ export function apply(ctx) {
   const handoffStore = new HandoffStore({ dir: path.join(dshHome, 'handoff') })
   handoffStore.sweep()
 
+  // MARK: 反向接力（手机 → 电脑）的接收状态机
+  //
+  // 处理顺序：already-started → 恢复未完成的启动 → 落盘 + 建会话 + 启动。
+  // 回执（received.json）在「建会话之后、prompt 之前」原子写入，这样：
+  //   - 并发/串行重传都能看到同一个 sessionId；
+  //   - 崩溃在 prompt 之前 → 重传只恢复启动，不重复建会话；
+  //   - prompt 用固定 requestId（DSH 侧幂等）→ 即使上次其实已经入队，也不会重复执行计划。
+  const receiveInFlight = new Map()
+
+  function receiveInboxRoot() {
+    return process.env.DSH_POCKET_INBOX ?? path.join(os.homedir(), 'Documents', 'DSH 接力')
+  }
+
+  function writeJsonAtomic(filePath, value) {
+    const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 })
+    fs.renameSync(tmp, filePath)
+  }
+
+  function readReceiveMeta(metaPath) {
+    try {
+      return JSON.parse(fs.readFileSync(metaPath, 'utf8'))
+    } catch {
+      return null
+    }
+  }
+
+  /** 把包里的文件按相对路径落盘；含子目录时逐级建目录（issue #2）。 */
+  function writeHandoffFiles(dir, id, parsed) {
+    const root = path.resolve(dir)
+    for (const file of parsed.files) {
+      const target = path.resolve(root, ...file.name.split('/'))
+      const inside = path.relative(root, target)
+      if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) {
+        throw new Error(`file-not-allowed: ${file.name}`)
+      }
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(target, file.data, { mode: 0o600 })
+    }
+    fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(parsed.manifest, null, 2), { mode: 0o600 })
+    // 交接说明用 handoff-<id>.md：说明正文里让 agent 读的就是这个名字。
+    // 另存一份 handoff.md，方便用户直接打开。
+    fs.writeFileSync(path.join(root, 'handoff.md'), parsed.brief, { mode: 0o600 })
+    fs.writeFileSync(path.join(root, `handoff-${id}.md`), parsed.brief, { mode: 0o600 })
+  }
+
+  /** 崩溃恢复：create 成功但 received.json 还没写时，按目录找回已经建好的会话。 */
+  async function findSessionForDir(dir) {
+    const query = ctx.get('sessionQuery')
+    if (!query?.listSessions) return null
+    try {
+      const records = (await query.listSessions()) ?? []
+      const found = records.find((record) => {
+        const header = record?.header ?? {}
+        return header.cwd === dir && (header.id ?? header.sessionId)
+      })
+      return found ? (found.header.id ?? found.header.sessionId) : null
+    } catch {
+      return null
+    }
+  }
+
+  function handoffKickoff(id, parsed) {
+    const title = parsed.manifest.session?.title ?? '手机接力'
+    return [
+      `我在手机上把计划定好了，通过「接力」发到这台电脑：${title}。`,
+      `交接说明是当前目录的 handoff-${id}.md，计划在「手机端定好的计划」一节。`,
+      '先读交接说明和计划，然后按计划开始做；需要我确认的直接用 ask_user_question 问我。',
+    ].join('\n')
+  }
+
+  /** 启动（或恢复启动）计划。失败也返回 200 + task.status，让手机能区分「文件到了」和「计划跑了」。 */
+  async function startHandoffTask(meta, parsed, metaPath) {
+    const controller = ctx.get('sessionController')
+    const id = meta.id
+    const requestId = meta.task?.requestId ?? `pocket-handoff-${id}`
+    const attempts = Number(meta.task?.attempts ?? 0) + 1
+    try {
+      await controller.prompt({
+        requestId,
+        sessionId: meta.sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: handoffKickoff(id, parsed) }],
+      }, AbortSignal.timeout(60_000))
+      meta.task = { status: 'started', requestId, attempts, startedAt: Date.now() }
+    } catch (error) {
+      const name = String(error?.name ?? '')
+      const uncertain = name === 'TimeoutError' || name === 'AbortError'
+      meta.task = {
+        status: uncertain ? 'unknown' : 'failed',
+        requestId,
+        attempts,
+        error: String(error?.message ?? error),
+      }
+      ctx.logger?.warn?.(`pocket-whale: handoff prompt ${meta.task.status}: ${meta.task.error}`)
+    }
+    writeJsonAtomic(metaPath, meta)
+    return { ok: true, ...meta }
+  }
+
+  async function receiveBundle(parsed) {
+    const controller = ctx.get('sessionController')
+    const id = parsed.manifest.id
+    const dir = path.join(receiveInboxRoot(), id)
+    const metaPath = path.join(dir, 'received.json')
+
+    const existing = readReceiveMeta(metaPath)
+    // 已成功处理过：只回执，不再建会话/不再提交计划。
+    if (existing?.sessionId && existing?.task?.status === 'started') {
+      return { status: 200, body: { ok: true, replayed: true, ...existing } }
+    }
+    // 兼容旧版回执（没有 task 字段）：旧版把 prompt 错误吞掉了，无法判断计划是否
+    // 真的启动。这里用同一个 requestId 再试一次——DSH 的 prompt 按 requestId 幂等，
+    // 已经入队过就只返回 accepted，不会重复执行；没入队的正好补上（issue #3 恢复）。
+    if (existing?.sessionId && !existing.task) {
+      existing.task = { status: 'starting', requestId: `pocket-handoff-${id}`, attempts: 0 }
+      return { status: 200, body: await startHandoffTask(existing, parsed, metaPath) }
+    }
+    // 会话已建但任务没启动成功：只恢复启动，不重复落盘、不重复建会话。
+    if (existing?.sessionId) {
+      return { status: 200, body: await startHandoffTask(existing, parsed, metaPath) }
+    }
+
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeHandoffFiles(dir, id, parsed)
+
+    // create 之后、回执写入之前崩溃：目录里已经有收到文件的痕迹，按 cwd 找回会话。
+    let sessionId = await findSessionForDir(dir)
+    if (!sessionId) {
+      const created = await controller.create({ cwd: dir })
+      sessionId = created?.sessionId
+    }
+    if (!sessionId) throw new Error('create-session-failed')
+
+    const meta = {
+      id,
+      sessionId,
+      cwd: dir,
+      files: parsed.files.map((file) => file.name),
+      receivedAt: Date.now(),
+      task: { status: 'starting', requestId: `pocket-handoff-${id}`, attempts: 0 },
+    }
+    writeJsonAtomic(metaPath, meta)
+    return { status: 200, body: await startHandoffTask(meta, parsed, metaPath) }
+  }
+
   /** 读一个会话的 header / 标题 / 事件；sessionId 省略时用最近一个带 cwd 的会话。 */
   async function readSessionInfo(sessionId) {
     const query = ctx.get('sessionQuery')
@@ -332,7 +493,9 @@ export function apply(ctx) {
         sendJson(res, 200, {
           ok: true,
           service: 'pocket-whale',
-          version: HANDOFF_VERSION,
+          // version = 安装包版本；protocolVersion = 接力/HTTP 字段约定版本。
+          version: PLUGIN_VERSION,
+          protocolVersion: PROTOCOL_VERSION,
           node: process.version,
           platform: process.platform,
           arch: process.arch,
@@ -858,8 +1021,28 @@ export function apply(ctx) {
 
         const id = String(body?.id ?? '')
         if (!id) return sendJson(res, 400, { ok: false, error: 'missing-id' })
+
+        // 先查已决表：结算时待答表会被清掉，只查待答表会把「主机已收到答案、
+        // 但客户端丢了回执后又重试」误判成 409（issue #5）。
+        const decision = questionBook.decisionOf(id)
+        if (decision.status === 'decided') {
+          if (sameQuestionAnswers(decision.outcome, body)) {
+            return sendJson(res, 200, { ok: true, id, replayed: true })
+          }
+          return sendJson(res, 409, { ok: false, error: 'answer-already-settled', id })
+        }
+
         const request = pendingQuestions.get(id)
-        if (!request) return sendJson(res, 409, { ok: false, error: 'unknown-or-expired-question', id })
+        if (!request) {
+          const settled = settledQuestions.get(id)
+          if (settled?.outcome === 'delegated') {
+            return sendJson(res, 409, { ok: false, error: 'question-delegated', id })
+          }
+          if (settled?.outcome === 'cancelled') {
+            return sendJson(res, 409, { ok: false, error: 'question-cancelled', id })
+          }
+          return sendJson(res, 409, { ok: false, error: 'unknown-or-expired-question', id })
+        }
 
         let batch
         try {
@@ -931,18 +1114,35 @@ export function apply(ctx) {
           const cwd = usableCwd(info.header.cwd)
           if (!cwd) return sendJson(res, 400, { ok: false, error: 'session-has-no-cwd' })
 
-          let paths = Array.isArray(body?.files) ? body.files.filter((name) => typeof name === 'string') : []
-          if (paths.length === 0) {
+          // 附件三态（issue #1）：
+          //   省略 files          → 老调用者的约定：按推荐规则自动挑候选文件
+          //   files: []           → 用户明确取消了所有勾选：零附件，纯计划也能发
+          //   files: ['a','b']    → 只打这几个（只含所选文件）
+          const request = body ?? {}
+          const filesFieldPresent = Object.prototype.hasOwnProperty.call(request, 'files')
+          const plan = typeof request.plan === 'string' ? request.plan.slice(0, 8000) : ''
+          const note = typeof request.note === 'string' ? request.note : ''
+          let paths
+          if (filesFieldPresent) {
+            if (!Array.isArray(request.files)) return sendJson(res, 400, { ok: false, error: 'bad-files' })
+            paths = request.files
+              .filter((name) => typeof name === 'string' && name.trim())
+              .map((name) => name.replaceAll('\\', '/'))
+          } else {
             const candidates = collectCandidates({ cwd, sessionCreatedAt: info.header.createdAt ?? 0 })
             const recommended = candidates.filter((file) => file.recommended)
             paths = (recommended.length > 0 ? recommended : candidates.slice(0, 5)).map((file) => file.path)
+            if (paths.length === 0) return sendJson(res, 400, { ok: false, error: 'no-candidate-files' })
           }
-          if (paths.length === 0) return sendJson(res, 400, { ok: false, error: 'no-candidate-files' })
+          // 显式零附件 + 没有计划也没有备注：允许发也没有意义，给个明确错误。
+          if (paths.length === 0 && !plan.trim() && !note.trim()) {
+            return sendJson(res, 400, { ok: false, error: 'no-files-or-plan' })
+          }
 
-          const files = loadPayloads({ cwd, paths })
+          const files = paths.length === 0 ? [] : loadPayloads({ cwd, paths })
           const now = Date.now()
           const id = newId(now)
-          const origin = String(body?.origin ?? '') || (() => {
+          const origin = String(request.origin ?? '') || (() => {
             try { return ctx.webServer?.getOrigin?.() ?? null } catch { return null }
           })()
           const { manifest, digest, tar } = createBundle({
@@ -952,9 +1152,9 @@ export function apply(ctx) {
             title: info.title ?? '',
             events: info.events,
             files,
-            note: typeof body?.note === 'string' ? body.note : '',
-            direction: body?.direction === 'to-desktop' ? 'to-desktop' : 'to-phone',
-            plan: typeof body?.plan === 'string' ? body.plan.slice(0, 8000) : '',
+            note,
+            direction: request.direction === 'to-desktop' ? 'to-desktop' : 'to-phone',
+            plan,
             source: { origin },
           })
           handoffStore.save(manifest, tar)
@@ -973,7 +1173,14 @@ export function apply(ctx) {
       },
     }),
 
-    // 反向接力：手机把「计划 + 文件」推到电脑，电脑解包后直接开一个会话按计划干活
+    // 反向接力：手机把「计划 + 文件」推到电脑，电脑解包后直接开一个会话按计划干活。
+    //
+    // 回执语义（issue #3）：文件接收结果和任务启动结果分开表达。
+    //   ok:true + task.status:'started'  = 文件已落盘，计划已交给 agent
+    //   ok:true + task.status:'failed'   = 文件已落盘，但计划没启动（重传会恢复）
+    //   ok:true + task.status:'unknown'  = 启动结果未知（超时），重传用同一个
+    //                                      requestId 幂等恢复，不会重复执行计划
+    //   replayed:true + task.status:'started' = 这个包之前已经成功处理过
     safeRegister({
       kind: 'exact',
       path: '/pocket/handoff/receive',
@@ -998,63 +1205,27 @@ export function apply(ctx) {
         }
 
         const id = parsed.manifest.id
-        const inboxRoot = process.env.DSH_POCKET_INBOX ?? path.join(os.homedir(), 'Documents', 'DSH 接力')
-        const dir = path.join(inboxRoot, id)
-        const metaPath = path.join(dir, 'received.json')
+        // 同一个包并发到达：共享第一次的处理结果，避免两个请求都建会话（issue #4）。
+        const running = receiveInFlight.get(id)
+        if (running) {
+          const shared = await running
+          return sendJson(res, shared.status, { ...shared.body, coalesced: true })
+        }
 
-        try {
-          // 幂等：同一个包重复上传不再建会话
+        const job = (async () => {
           try {
-            const existing = JSON.parse(fs.readFileSync(metaPath, 'utf8'))
-            if (existing?.sessionId) {
-              return sendJson(res, 200, { ok: true, replayed: true, ...existing })
-            }
-          } catch {}
-
-          fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-          for (const file of parsed.files) {
-            fs.writeFileSync(path.join(dir, file.name), file.data, { mode: 0o600 })
-          }
-          fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(parsed.manifest, null, 2), { mode: 0o600 })
-          // 交接说明用 handoff-<id>.md：说明正文里让 agent 读的就是这个名字。
-          // 另存一份 handoff.md，方便用户直接打开。
-          fs.writeFileSync(path.join(dir, `handoff-${id}.md`), parsed.brief, { mode: 0o600 })
-          fs.writeFileSync(path.join(dir, 'handoff.md'), parsed.brief, { mode: 0o600 })
-
-          const created = await controller.create({ cwd: dir })
-          const sessionId = created?.sessionId
-          if (!sessionId) throw new Error('create-session-failed')
-
-          const title = parsed.manifest.session?.title ?? '手机接力'
-          const kickoff = [
-            `我在手机上把计划定好了，通过「接力」发到这台电脑：${title}。`,
-            `交接说明是当前目录的 handoff-${id}.md，计划在「手机端定好的计划」一节。`,
-            '先读交接说明和计划，然后按计划开始做；需要我确认的直接用 ask_user_question 问我。',
-          ].join('\n')
-
-          try {
-            await controller.prompt({
-              requestId: `pocket-handoff-${id}`,
-              sessionId,
-              mode: 'queue',
-              content: [{ type: 'text', text: kickoff }],
-            }, AbortSignal.timeout(60_000))
+            return await receiveBundle(parsed)
           } catch (error) {
-            ctx.logger?.warn?.(`pocket-whale: handoff prompt failed: ${error?.message ?? error}`)
+            ctx.logger?.warn?.(`pocket-whale: handoff receive failed: ${error?.message ?? error}`)
+            return { status: 500, body: { ok: false, error: String(error?.message ?? error) } }
           }
-
-          const meta = {
-            id,
-            sessionId,
-            cwd: dir,
-            files: parsed.files.map((file) => file.name),
-            receivedAt: Date.now(),
-          }
-          fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), { mode: 0o600 })
-          sendJson(res, 200, { ok: true, ...meta })
-        } catch (error) {
-          ctx.logger?.warn?.(error)
-          sendJson(res, 500, { ok: false, error: String(error?.message ?? error) })
+        })()
+        receiveInFlight.set(id, job)
+        try {
+          const result = await job
+          sendJson(res, result.status, result.body)
+        } finally {
+          receiveInFlight.delete(id)
         }
       },
     }),
@@ -1157,7 +1328,8 @@ export function apply(ctx) {
       const loopbackOnly = !origin || /(^|\/\/)(127\.|localhost|\[::1\])/.test(origin)
       const reply = Buffer.from(JSON.stringify({
         service: 'pocket-whale',
-        version: HANDOFF_VERSION,
+        version: PLUGIN_VERSION,
+        protocolVersion: PROTOCOL_VERSION,
         port,
         origin,
         loopbackOnly,

@@ -23,7 +23,7 @@ test('配对请求进入待批，批准后发 token，轮询只给一次', async
   assert.equal(gw.pending().length, 1)
   assert.equal(gw.pending()[0].shortCode, 'ABCDEF12')
 
-  assert.deepEqual(gw.pollPairing(entry.id), { status: 'pending' })
+  assert.deepEqual(gw.pollPairing(entry.id), { status: 'pending', code: 'ABCDEF12' })
 
   const token = gw.approve(entry.id)
   assert.ok(token)
@@ -95,6 +95,28 @@ test('HTTP：未授权访问 /pocket/* 返回 401，授权后转发到上游', a
     assert.match(body.host, /^127\.0\.0\.1:/, '转发时 Host 必须改写成回环地址')
     await gw.close()
   })
+})
+
+test('HTTP：配对申请与轮询都带可核对的短码', async () => {
+  const gw = new PairingGateway({ getTargetPort: () => 1234 })
+  const port = await gw.listen(0)
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/lan/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'iPhone', fingerprint: 'abcdef123456' }),
+    })
+    const body = await res.json()
+    assert.equal(body.ok, true)
+    assert.equal(body.status, 'pending')
+    assert.equal(body.code, 'ABCDEF12', '申请响应要带与电脑弹窗一致的验证码')
+
+    const status = await fetch(`http://127.0.0.1:${port}/lan/pair-status?id=${body.id}`).then((response) => response.json())
+    assert.equal(status.status, 'pending')
+    assert.equal(status.code, 'ABCDEF12', '等待页轮询也能拿到短码')
+  } finally {
+    await gw.close()
+  }
 })
 
 test('HTTP：管理接口只允许回环来源', async () => {
